@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -66,38 +67,56 @@ func TestExternalProviderDeepCopy(t *testing.T) {
 func TestExternalModelDeepCopy(t *testing.T) {
 	original := &ExternalModel{
 		Spec: ExternalModelSpec{
+			GatewayRefs: []NamespacedObjectReference{{Name: "gateway", Namespace: "tenant-a"}},
 			ExternalProviderRefs: []ExternalProviderRef{
 				{
-					Ref:         NameReference{Name: "my-openai"},
+					Ref:         ExternalProviderReference{Name: "my-openai", Namespace: "providers"},
 					TargetModel: "gpt-4o",
 					APIFormat:   "openai-chat",
 					Path:        "/v1/chat/completions",
 				},
 			},
 		},
+		Status: ExternalModelStatus{
+			Gateways: []ExternalModelGatewayStatus{{
+				NamespacedObjectReference: NamespacedObjectReference{Name: "gateway", Namespace: "tenant-a"},
+				HTTPRouteRef:              &NamespacedObjectReference{Name: "route", Namespace: "tenant-a"},
+				Conditions:                []metav1.Condition{{Type: "Ready", Reason: "Reconciled"}},
+			}},
+		},
 	}
 
 	copied := original.DeepCopy()
 
-	assert.Equal(t, original.Spec, copied.Spec)
+	assert.Equal(t, original, copied)
 
 	// Verify deep copy — mutating the copy must not affect the original
 	copied.Spec.ExternalProviderRefs[0].TargetModel = "gpt-3.5"
 	assert.Equal(t, "gpt-4o", original.Spec.ExternalProviderRefs[0].TargetModel)
+	copied.Spec.ExternalProviderRefs[0].Ref.Namespace = "other-providers"
+	assert.Equal(t, "providers", original.Spec.ExternalProviderRefs[0].Ref.Namespace)
+	copied.Spec.GatewayRefs[0].Namespace = "tenant-b"
+	assert.Equal(t, "tenant-a", original.Spec.GatewayRefs[0].Namespace)
+	copied.Status.Gateways[0].HTTPRouteRef.Name = "other-route"
+	assert.Equal(t, "route", original.Status.Gateways[0].HTTPRouteRef.Name)
+	copied.Status.Gateways[0].Conditions[0].Reason = "Failed"
+	assert.Equal(t, "Reconciled", original.Status.Gateways[0].Conditions[0].Reason)
 }
 
 // CRD schema validation (patterns) is enforced at admission time by the K8s API server,
 // not in Go structs. These tests verify the regex patterns themselves are correct.
 
 func TestNameReferencePattern(t *testing.T) {
-	pattern := regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`)
+	crd := inferenceCRDs(t)[1]
+	name := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties["auth"].Properties["secretRef"].Properties["name"]
+	pattern := regexp.MustCompile(name.Pattern)
 
-	valid := []string{"my-openai", "a", "openai-key-v2", "a1b2"}
+	valid := []string{"my-openai", "a", "openai-key-v2", "a1b2", "has.dot", "a..b", "a.-b", "a-.b"}
 	for _, name := range valid {
 		assert.True(t, pattern.MatchString(name), "should accept %q", name)
 	}
 
-	invalid := []string{"My-OpenAI", "UPPERCASE", "-leading-dash", "trailing-", "has/slash", "has.dot", "has space"}
+	invalid := []string{"My-OpenAI", "UPPERCASE", "-leading-dash", "trailing-", "has/slash", "has space", ".leading-dot", "trailing-dot."}
 	for _, name := range invalid {
 		assert.False(t, pattern.MatchString(name), "should reject %q", name)
 	}

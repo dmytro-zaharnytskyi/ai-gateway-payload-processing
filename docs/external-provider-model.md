@@ -18,6 +18,34 @@ This separation allows:
 - **Explicit API format selection** — declare which translation the gateway applies
 - **Path placeholder substitution** — parameterize provider-specific URL paths via config
 
+## Shared inference API schema
+
+For [RHOAIENG-90800](https://redhat.atlassian.net/browse/RHOAIENG-90800),
+`ai-gateway-controller` owns the additive inference API contract. This repo keeps
+a local type mirror and generates its CRDs/deepcopy with its own generators,
+following [ADR D2](https://github.com/opendatahub-io/architecture-decision-records/pull/165).
+The extension adds optional `spec.gatewayRefs`, `status.gateways`, and provider
+reference namespaces while preserving existing fields and accepted values,
+including `auth.type: simple`. Its schema acceptance does not add auth behavior.
+The [schema fixtures](../api/inference/v1alpha1/testdata/README.md) record source
+provenance and pin the AGC contract and installed compatibility baseline in CI.
+
+Gateway lists identify resources by namespace/name; an explicit attachment list
+requires 1–16 unique pairs. Per-gateway status includes an optional full
+`httpRouteRef` and conditions keyed by type whose `observedGeneration` refers to
+the model generation. Readiness attests reconciliation/distribution. The legacy
+`httpRouteName` alias remains available for legacy models and a single attachment
+whose route is in the model namespace. An omitted provider namespace means the
+model namespace. Inherited auth uses a provider-local Secret; an auth override
+uses a model-local Secret. Secret references remain name-only.
+
+This schema synchronization is a bounded extension to the migration ADR's frozen
+baseline for API review with AGC, MaaS and API owners. Serving the new fields
+requires the follow-up attachment, status, authorization and MaaS implementations,
+aligned installed schemas, and verified tenant controller ownership through the
+existing cleanup/claim handoff. Existing legacy IPP objects keep their supported
+path; the schema alone does not activate AGC/Praxis features.
+
 ## ExternalProvider
 
 An ExternalProvider represents a single provider account or endpoint. Multiple ExternalModels

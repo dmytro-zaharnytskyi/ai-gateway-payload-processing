@@ -156,7 +156,7 @@ func newExternalModel(name, namespace, providerName, targetModel string) *infere
 		Spec: inferencev1alpha1.ExternalModelSpec{
 			ExternalProviderRefs: []inferencev1alpha1.ExternalProviderRef{
 				{
-					Ref:         inferencev1alpha1.NameReference{Name: providerName},
+					Ref:         inferencev1alpha1.ExternalProviderReference{Name: providerName},
 					TargetModel: targetModel,
 					APIFormat:   "openai",
 					Path:        "/v1/chat/completions",
@@ -249,7 +249,7 @@ func TestReconcile_UnresolvedPathPlaceholder(t *testing.T) {
 		Spec: inferencev1alpha1.ExternalModelSpec{
 			ExternalProviderRefs: []inferencev1alpha1.ExternalProviderRef{
 				{
-					Ref:         inferencev1alpha1.NameReference{Name: "my-vertex"},
+					Ref:         inferencev1alpha1.ExternalProviderReference{Name: "my-vertex"},
 					TargetModel: "gemini-pro",
 					APIFormat:   "openai-chat",
 					Path:        "/v1/projects/{project}/locations/{location}/chat/completions",

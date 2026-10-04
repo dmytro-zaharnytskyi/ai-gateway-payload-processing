@@ -61,7 +61,7 @@ func newTestModel(name, ns string, refs ...inferencev1alpha1.ExternalProviderRef
 
 func newRef(providerName, targetModel, apiFormat, path string) inferencev1alpha1.ExternalProviderRef {
 	return inferencev1alpha1.ExternalProviderRef{
-		Ref:         inferencev1alpha1.NameReference{Name: providerName},
+		Ref:         inferencev1alpha1.ExternalProviderReference{Name: providerName},
 		TargetModel: targetModel,
 		APIFormat:   apiFormat,
 		Path:        path,
