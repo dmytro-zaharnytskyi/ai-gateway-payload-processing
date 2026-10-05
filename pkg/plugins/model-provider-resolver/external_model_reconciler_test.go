@@ -426,6 +426,80 @@ func TestModelReconciler_UnresolvedPlaceholderSkipsRef(t *testing.T) {
 	assert.False(t, found, "model should not be stored when path has unresolved placeholders")
 }
 
+func TestModelReconciler_ProviderNamespace(t *testing.T) {
+	for _, namespace := range []string{"", "models", "shared"} {
+		t.Run("namespace="+namespace, func(t *testing.T) {
+			key := types.NamespacedName{Namespace: "models", Name: "model"}
+			ref := newRef("provider", "gpt", "openai-chat", "/v1/chat/completions")
+			ref.Ref.Namespace = namespace
+			reader := &mockModelReader{objects: map[types.NamespacedName]*inferencev1alpha1.ExternalModel{
+				key: newTestModel(key.Name, key.Namespace, ref),
+			}}
+			store := newInfoStore()
+			for _, ns := range []string{"models", "shared"} {
+				store.addOrUpdateProvider(types.NamespacedName{Namespace: ns, Name: "provider"},
+					&providerInfo{provider: "openai", endpoint: ns + ".example.com"})
+			}
+			r := &externalModelReconciler{Reader: reader, store: store}
+			_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+			require.NoError(t, err)
+			info, found := store.getModelByName(key.Name)
+			if namespace == "shared" {
+				assert.False(t, found, "foreign references must not select either provider without authorization")
+			} else {
+				require.True(t, found)
+				require.Len(t, info.refs, 1)
+				assert.Equal(t, "models.example.com", info.refs[0].endpoint)
+			}
+		})
+	}
+}
+
+func TestModelReconciler_ProviderNamespaceUpdateRemovesStaleSelection(t *testing.T) {
+	for _, keepLocalRef := range []bool{false, true} {
+		t.Run(map[bool]string{false: "only foreign reference", true: "remaining local reference"}[keepLocalRef], func(t *testing.T) {
+			key := types.NamespacedName{Namespace: "models", Name: "model"}
+			model := newTestModel(key.Name, key.Namespace, newRef("provider", "gpt", "openai-chat", "/v1/chat/completions"))
+			model.Spec.ModelName = "client-model"
+			reader := &mockModelReader{objects: map[types.NamespacedName]*inferencev1alpha1.ExternalModel{key: model}}
+			store := newInfoStore()
+			store.addOrUpdateProvider(types.NamespacedName{Namespace: key.Namespace, Name: "provider"},
+				&providerInfo{provider: "openai", endpoint: "local.example.com"})
+			store.addOrUpdateProvider(types.NamespacedName{Namespace: key.Namespace, Name: "other"},
+				&providerInfo{provider: "openai", endpoint: "other.example.com"})
+			r := &externalModelReconciler{Reader: reader, store: store}
+			req := ctrl.Request{NamespacedName: key}
+			_, err := r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+			_, found := store.getModelByName(model.Spec.ModelName)
+			require.True(t, found)
+
+			model.Spec.ExternalProviderRefs[0].Ref.Namespace = "shared"
+			if keepLocalRef {
+				model.Spec.ExternalProviderRefs = append(model.Spec.ExternalProviderRefs,
+					newRef("other", "gpt", "openai-chat", "/v1/chat/completions"))
+			}
+			_, err = r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+			info, found := store.getModelByName(model.Spec.ModelName)
+			if keepLocalRef {
+				require.True(t, found)
+				require.Len(t, info.refs, 1)
+				assert.Equal(t, "other", info.refs[0].providerName)
+			} else {
+				assert.False(t, found, "the previously cached local provider must stop serving")
+			}
+
+			model.Spec.ExternalProviderRefs[0].Ref.Namespace = key.Namespace
+			_, err = r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+			info, found = store.getModelByName(model.Spec.ModelName)
+			require.True(t, found)
+			assert.Equal(t, "provider", info.refs[0].providerName)
+		})
+	}
+}
+
 func TestMergeConfig(t *testing.T) {
 	tests := []struct {
 		name     string
