@@ -52,7 +52,6 @@ type resolvedProviderRef struct {
 // externalModelInfo holds all resolved provider refs for an external model.
 // The plugin selects a provider based on weights at request time.
 type externalModelInfo struct {
-	owner     types.NamespacedName
 	modelName string
 	refs      []*resolvedProviderRef
 }
@@ -102,15 +101,11 @@ func (s *infoStore) addOrUpdateModel(modelName string, info *externalModelInfo) 
 	s.models[modelName] = info
 }
 
-// deleteModel removes cached mappings owned by the given ExternalModel.
-func (s *infoStore) deleteModel(owner types.NamespacedName) {
+// deleteModel removes ExternalModel information by modelName.
+func (s *infoStore) deleteModel(modelName string) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	for name, info := range s.models {
-		if info.owner == owner {
-			delete(s.models, name)
-		}
-	}
+	delete(s.models, modelName)
 }
 
 // getModelByName looks up an ExternalModel by its client-facing modelName.

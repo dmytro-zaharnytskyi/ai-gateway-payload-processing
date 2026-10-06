@@ -54,7 +54,12 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if errors.IsNotFound(err) || !model.GetDeletionTimestamp().IsZero() {
-		r.store.deleteModel(req.NamespacedName)
+		// On deletion, use the CRD name as fallback since spec may be empty.
+		deleteName := model.Spec.ModelName
+		if deleteName == "" {
+			deleteName = req.Name
+		}
+		r.store.deleteModel(deleteName)
 		logger.Info("ExternalModel removed from store", "name", req.Name, "namespace", req.Namespace)
 		return ctrl.Result{}, nil
 	}
@@ -66,14 +71,9 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Resolve all refs whose providers are available in the store.
 	var resolved []*resolvedProviderRef
-	unsupportedNamespace := false
 	for i := range model.Spec.ExternalProviderRefs {
-		ref := &model.Spec.ExternalProviderRefs[i]
-		resolvedRef, err := r.resolveRef(req.Namespace, ref)
+		resolvedRef, err := r.resolveRef(req.Namespace, &model.Spec.ExternalProviderRefs[i])
 		if err != nil {
-			if ref.Ref.Namespace != "" && ref.Ref.Namespace != req.Namespace {
-				unsupportedNamespace = true
-			}
 			logger.Error(err, "failed to resolve ref, skipping", "provider", model.Spec.ExternalProviderRefs[i].Ref.Name)
 			continue
 		}
@@ -81,16 +81,11 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if len(resolved) == 0 {
-		if unsupportedNamespace {
-			// A previously resolved local reference must stop serving after an
-			// update to an unsupported foreign namespace.
-			r.store.deleteModel(req.NamespacedName)
-		}
 		logger.Info("no ExternalProvider available for any ref, requeuing")
 		return ctrl.Result{RequeueAfter: providerRequeueDelay}, nil
 	}
 
-	r.store.addOrUpdateModel(modelName, &externalModelInfo{owner: req.NamespacedName, modelName: modelName, refs: resolved})
+	r.store.addOrUpdateModel(modelName, &externalModelInfo{modelName: modelName, refs: resolved})
 	logger.Info("updated model store", "modelName", modelName, "resolvedRefs", len(resolved))
 	return ctrl.Result{}, nil
 }

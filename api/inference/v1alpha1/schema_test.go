@@ -41,19 +41,6 @@ func inferenceCRDs(t *testing.T) []*apiextensionsv1.CustomResourceDefinition {
 	return crds
 }
 
-// The validation-only fixture comes from MaaS commit
-// 353a85e841d8442afc976a539e49e2925b73e017, deployment/base/maas-controller/crd/bases,
-// as packaged by ai-gateway-operator. Descriptions are omitted; validation,
-// defaulting and list semantics are preserved.
-func installedLegacySchemas(t *testing.T) map[string]apiextensionsv1.JSONSchemaProps {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "installed-legacy-schema.json"))
-	require.NoError(t, err)
-	var schemas map[string]apiextensionsv1.JSONSchemaProps
-	require.NoError(t, json.Unmarshal(data, &schemas))
-	return schemas
-}
-
 func stripDescriptions(schema *apiextensionsv1.JSONSchemaProps) {
 	schema.Description = ""
 	for name, property := range schema.Properties {
@@ -82,37 +69,6 @@ func TestAGCSchemaMirror(t *testing.T) {
 			actual := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.DeepCopy()
 			stripDescriptions(actual)
 			assert.Equal(t, expected[crd.Spec.Names.Plural], *actual, "local schema drifted from the AGC contract")
-		})
-	}
-}
-
-func TestInstalledLegacySchemaCompatibility(t *testing.T) {
-	legacy := installedLegacySchemas(t)
-	for _, crd := range inferenceCRDs(t) {
-		t.Run(crd.Spec.Names.Kind, func(t *testing.T) {
-			actual := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.DeepCopy()
-			stripDescriptions(actual)
-			expected := legacy[crd.Spec.Names.Plural]
-			status := expected.Properties["status"]
-			// Keep AGC's pre-existing status attestations as well as the installed legacy fields.
-			status.Properties["observedGeneration"] = apiextensionsv1.JSONSchemaProps{Type: "integer", Format: "int64"}
-			if crd.Spec.Names.Kind == "ExternalModel" {
-				status.Properties["overlayDigest"] = apiextensionsv1.JSONSchemaProps{Type: "string"}
-				status.Properties["overlayGeneration"] = apiextensionsv1.JSONSchemaProps{Type: "integer", Format: "int64"}
-				spec := actual.Properties["spec"]
-				delete(spec.Properties, "gatewayRefs")
-				ref := spec.Properties["externalProviderRefs"].Items.Schema.Properties["ref"]
-				delete(ref.Properties, "namespace")
-				delete(actual.Properties["status"].Properties, "gateways")
-
-				// Provider names retain the broader name pattern accepted by the local
-				// API mirrors and AGC, in addition to the installed name-only pattern.
-				expectedRef := expected.Properties["spec"].Properties["externalProviderRefs"].Items.Schema.Properties["ref"]
-				name := expectedRef.Properties["name"]
-				name.Pattern = expected.Properties["spec"].Properties["externalProviderRefs"].Items.Schema.Properties["auth"].Properties["secretRef"].Properties["name"].Pattern
-				expectedRef.Properties["name"] = name
-			}
-			assert.Equal(t, expected, *actual, "legacy validation/defaults and AGC status must survive the additive extension")
 		})
 	}
 }

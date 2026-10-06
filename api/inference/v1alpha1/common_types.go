@@ -36,10 +36,11 @@ type AuthConfig struct {
 // NameReference is a reference to a Kubernetes resource by name.
 // The referenced resource must be in the same namespace.
 type NameReference struct {
+	// The pattern retains names accepted by the installed schema for compatibility.
+
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	// Retain the installed schema's accepted name pattern for compatibility.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?$`
 	Name string `json:"name"`
 }

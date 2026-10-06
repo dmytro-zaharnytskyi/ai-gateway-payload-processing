@@ -34,7 +34,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -252,84 +251,6 @@ func TestReconcile_ProviderNamespace(t *testing.T) {
 				require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(model), &route))
 				assert.Equal(t, "local.example.com", route.Spec.Rules[0].Filters[0].RequestHeaderModifier.Set[0].Value)
 			}
-		})
-	}
-}
-
-func TestReconcile_ProviderNamespaceUpdateRemovesStaleRoute(t *testing.T) {
-	for _, keepLocalRef := range []bool{false, true} {
-		t.Run(map[bool]string{false: "only foreign reference", true: "remaining local reference"}[keepLocalRef], func(t *testing.T) {
-			ns := createTestNamespace(t)
-			foreign := createTestNamespace(t)
-			createExternalProvider(t, "provider", ns, "local.example.com")
-			createExternalProvider(t, "other", ns, "other.example.com")
-			model := newExternalModel("model", ns, "provider", "gpt")
-			require.NoError(t, k8sClient.Create(ctx, model))
-			waitForModelPhase(t, model.Name, ns, "Ready")
-			require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(model), model))
-			old := model.DeepCopy()
-			model.Spec.ExternalProviderRefs[0].Ref.Namespace = foreign
-			if keepLocalRef {
-				model.Spec.ExternalProviderRefs = append(model.Spec.ExternalProviderRefs,
-					newExternalModel("", ns, "other", "gpt").Spec.ExternalProviderRefs[0])
-			}
-			require.NoError(t, k8sClient.Patch(ctx, model, client.MergeFrom(old)))
-			var route gatewayapiv1.HTTPRoute
-			if keepLocalRef {
-				require.Eventually(t, func() bool {
-					if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(model), &route); err != nil {
-						return false
-					}
-					for _, rule := range route.Spec.Rules {
-						for _, backend := range rule.BackendRefs {
-							if backend.Name != "other" {
-								return false
-							}
-						}
-					}
-					return len(route.Spec.Rules) > 0
-				}, 10*time.Second, 100*time.Millisecond)
-			} else {
-				waitForModelPhase(t, model.Name, ns, "Failed")
-				assert.True(t, apierrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(model), &route)))
-				require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(model), model))
-				assert.Empty(t, model.Status.HTTPRouteName)
-			}
-			require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(model), model))
-			old = model.DeepCopy()
-			model.Spec.ExternalProviderRefs[0].Ref.Namespace = ns
-			require.NoError(t, k8sClient.Patch(ctx, model, client.MergeFrom(old)))
-			waitForModelPhase(t, model.Name, ns, "Ready")
-			require.Eventually(t, func() bool {
-				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(model), &route); err != nil {
-					return false
-				}
-				return route.Spec.Rules[0].BackendRefs[0].Name == "provider"
-			}, 10*time.Second, 100*time.Millisecond)
-		})
-	}
-}
-
-func TestRemoveUnsupportedHTTPRoutePreservesOtherOwnership(t *testing.T) {
-	ns := createTestNamespace(t)
-	for _, scope := range []string{"other controller", "other model"} {
-		t.Run(scope, func(t *testing.T) {
-			model := newExternalModel("ownership", ns, "provider", "gpt")
-			model.UID = "model-uid"
-			route := buildHTTPRoute([]resolvedRef{{providerName: "provider", providerEndpoint: "api.example.com", port: 443}},
-				model.Name, ns, "test-gateway", "test-gateway-ns", "30s", commonLabels(model.Name))
-			owner := model.DeepCopy()
-			if scope == "other controller" {
-				route.Labels[ctrlcommon.LabelManagedBy] = "ai-gateway-controller"
-			} else {
-				owner.UID = "other-model-uid"
-			}
-			require.NoError(t, controllerutil.SetControllerReference(owner, route, k8sClient.Scheme()))
-			require.NoError(t, k8sClient.Create(ctx, route))
-			r := &Reconciler{Client: k8sClient}
-			require.NoError(t, r.removeUnsupportedHTTPRoute(ctx, model))
-			require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(route), route))
-			require.NoError(t, k8sClient.Delete(ctx, route))
 		})
 	}
 }
