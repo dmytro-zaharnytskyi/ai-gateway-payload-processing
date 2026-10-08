@@ -71,9 +71,14 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// Resolve all refs whose providers are available in the store.
 	var resolved []*resolvedProviderRef
+	unsupportedNamespace := false
 	for i := range model.Spec.ExternalProviderRefs {
-		resolvedRef, err := r.resolveRef(req.Namespace, &model.Spec.ExternalProviderRefs[i])
+		ref := &model.Spec.ExternalProviderRefs[i]
+		resolvedRef, err := r.resolveRef(req.Namespace, ref)
 		if err != nil {
+			if ref.Ref.Namespace != "" && ref.Ref.Namespace != req.Namespace {
+				unsupportedNamespace = true
+			}
 			logger.Error(err, "failed to resolve ref, skipping", "provider", model.Spec.ExternalProviderRefs[i].Ref.Name)
 			continue
 		}
@@ -81,6 +86,11 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if len(resolved) == 0 {
+		if unsupportedNamespace {
+			// Stop serving a previously cached local provider after an update to
+			// an unsupported foreign namespace.
+			r.store.deleteModel(modelName)
+		}
 		logger.Info("no ExternalProvider available for any ref, requeuing")
 		return ctrl.Result{RequeueAfter: providerRequeueDelay}, nil
 	}

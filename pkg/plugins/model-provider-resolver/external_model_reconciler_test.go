@@ -455,6 +455,38 @@ func TestModelReconciler_ProviderNamespace(t *testing.T) {
 	}
 }
 
+func TestModelReconciler_ProviderNamespaceUpdate(t *testing.T) {
+	for _, change := range []string{"foreign reference", "provider removed"} {
+		t.Run(change, func(t *testing.T) {
+			key := types.NamespacedName{Namespace: "models", Name: "model"}
+			providerKey := types.NamespacedName{Namespace: key.Namespace, Name: "provider"}
+			model := newTestModel(key.Name, key.Namespace, newRef("provider", "gpt", "openai-chat", "/v1/chat/completions"))
+			reader := &mockModelReader{objects: map[types.NamespacedName]*inferencev1alpha1.ExternalModel{key: model}}
+			store := newInfoStore()
+			store.addOrUpdateProvider(providerKey, &providerInfo{provider: "openai", endpoint: "local.example.com"})
+			r := &externalModelReconciler{Reader: reader, store: store}
+			req := ctrl.Request{NamespacedName: key}
+			_, err := r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+
+			if change == "foreign reference" {
+				model.Spec.ExternalProviderRefs[0].Ref.Namespace = "shared"
+			} else {
+				store.deleteProvider(providerKey)
+			}
+			result, err := r.Reconcile(context.Background(), req)
+			require.NoError(t, err)
+			assert.Equal(t, providerRequeueDelay, result.RequeueAfter)
+			_, found := store.getModelByName(key.Name)
+			if change == "foreign reference" {
+				assert.False(t, found, "explicit unsupported reference must stop serving the cached local provider")
+			} else {
+				assert.True(t, found, "transient provider unavailability must keep the last-known-good entry")
+			}
+		})
+	}
+}
+
 func TestMergeConfig(t *testing.T) {
 	tests := []struct {
 		name     string

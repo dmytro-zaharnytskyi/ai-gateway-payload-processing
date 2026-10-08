@@ -255,6 +255,42 @@ func TestReconcile_ProviderNamespace(t *testing.T) {
 	}
 }
 
+func TestReconcile_ProviderNamespaceUpdate(t *testing.T) {
+	for _, change := range []string{"foreign reference", "provider not ready"} {
+		t.Run(change, func(t *testing.T) {
+			ns := createTestNamespace(t)
+			createExternalProvider(t, "provider", ns, "local.example.com")
+			model := newExternalModel("model", ns, "provider", "gpt")
+			require.NoError(t, k8sClient.Create(ctx, model))
+			waitForModelPhase(t, model.Name, ns, "Ready")
+
+			if change == "foreign reference" {
+				require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(model), model))
+				old := model.DeepCopy()
+				model.Spec.ExternalProviderRefs[0].Ref.Namespace = createTestNamespace(t)
+				require.NoError(t, k8sClient.Patch(ctx, model, client.MergeFrom(old)))
+			} else {
+				provider := &inferencev1alpha1.ExternalProvider{}
+				require.NoError(t, k8sClient.Get(ctx, types.NamespacedName{Name: "provider", Namespace: ns}, provider))
+				provider.Status.Phase = "Failed"
+				require.NoError(t, k8sClient.Status().Update(ctx, provider))
+			}
+			waitForModelPhase(t, model.Name, ns, "Failed")
+
+			var route gatewayapiv1.HTTPRoute
+			err := k8sClient.Get(ctx, client.ObjectKeyFromObject(model), &route)
+			require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(model), model))
+			if change == "foreign reference" {
+				assert.True(t, apierrors.IsNotFound(err), "explicit unsupported reference must withdraw the route")
+				assert.Empty(t, model.Status.HTTPRouteName)
+			} else {
+				require.NoError(t, err, "transient readiness failure must keep the last-known-good route")
+				assert.Equal(t, model.Name, model.Status.HTTPRouteName)
+			}
+		})
+	}
+}
+
 func TestReconcile_MissingProvider(t *testing.T) {
 	ns := createTestNamespace(t)
 	// Intentionally do NOT create the provider
