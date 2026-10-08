@@ -54,12 +54,7 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if errors.IsNotFound(err) || !model.GetDeletionTimestamp().IsZero() {
-		// On deletion, use the CRD name as fallback since spec may be empty.
-		deleteName := model.Spec.ModelName
-		if deleteName == "" {
-			deleteName = req.Name
-		}
-		r.store.deleteModel(deleteName)
+		r.store.deleteModel(req.NamespacedName)
 		logger.Info("ExternalModel removed from store", "name", req.Name, "namespace", req.Namespace)
 		return ctrl.Result{}, nil
 	}
@@ -89,13 +84,13 @@ func (r *externalModelReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if unsupportedNamespace {
 			// Stop serving a previously cached local provider after an update to
 			// an unsupported foreign namespace.
-			r.store.deleteModel(modelName)
+			r.store.deleteModel(req.NamespacedName)
 		}
 		logger.Info("no ExternalProvider available for any ref, requeuing")
 		return ctrl.Result{RequeueAfter: providerRequeueDelay}, nil
 	}
 
-	r.store.addOrUpdateModel(modelName, &externalModelInfo{modelName: modelName, refs: resolved})
+	r.store.addOrUpdateModel(modelName, &externalModelInfo{owner: req.NamespacedName, modelName: modelName, refs: resolved})
 	logger.Info("updated model store", "modelName", modelName, "resolvedRefs", len(resolved))
 	return ctrl.Result{}, nil
 }

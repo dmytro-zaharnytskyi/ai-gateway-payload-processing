@@ -136,20 +136,32 @@ func TestModelReconciler_ModelNameOverride(t *testing.T) {
 
 func TestModelReconciler_DeletedCR(t *testing.T) {
 	key := types.NamespacedName{Namespace: "models", Name: "deleted"}
-	reader := &mockModelReader{objects: map[types.NamespacedName]*inferencev1alpha1.ExternalModel{}}
+	for _, modelName := range []string{key.Name, "custom-alias"} {
+		for _, deleting := range []bool{false, true} {
+			t.Run(modelName+"/"+map[bool]string{false: "deleted", true: "deleting"}[deleting], func(t *testing.T) {
+				reader := &mockModelReader{objects: map[types.NamespacedName]*inferencev1alpha1.ExternalModel{}}
+				if deleting {
+					model := newTestModel(key.Name, key.Namespace)
+					model.Spec.ModelName = modelName
+					model.DeletionTimestamp = ptr.To(metav1.Now())
+					reader.objects[key] = model
+				}
 
-	store := newInfoStore()
-	store.addOrUpdateModel(key.Name, &externalModelInfo{modelName: key.Name, refs: []*resolvedProviderRef{
-		{provider: "openai", targetModel: "gpt-4o", weight: 1},
-	}})
+				store := newInfoStore()
+				store.addOrUpdateModel(modelName, &externalModelInfo{owner: key, modelName: modelName, refs: []*resolvedProviderRef{
+					{provider: "openai", targetModel: "gpt-4o", weight: 1},
+				}})
 
-	r := &externalModelReconciler{Reader: reader, store: store}
-	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
-	require.NoError(t, err)
-	assert.Equal(t, ctrl.Result{}, result)
+				r := &externalModelReconciler{Reader: reader, store: store}
+				result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+				require.NoError(t, err)
+				assert.Equal(t, ctrl.Result{}, result)
 
-	_, found := store.getModelByName(key.Name)
-	assert.False(t, found, "store entry should be removed on delete")
+				_, found := store.getModelByName(modelName)
+				assert.False(t, found, "store entry should be removed on delete")
+			})
+		}
+	}
 }
 
 func TestModelReconciler_ProviderNotAvailable(t *testing.T) {
@@ -484,6 +496,54 @@ func TestModelReconciler_ProviderNamespaceUpdate(t *testing.T) {
 				assert.True(t, found, "transient provider unavailability must keep the last-known-good entry")
 			}
 		})
+	}
+}
+
+func TestModelReconciler_CleanupPreservesOtherOwners(t *testing.T) {
+	for _, namespace := range []string{"team-a", "team-b"} {
+		for _, cleanup := range []string{"foreign-reference", "deleted", "deleting"} {
+			t.Run(namespace+"/"+cleanup, func(t *testing.T) {
+				ownerKey := types.NamespacedName{Namespace: "team-a", Name: "owner-model"}
+				otherKey := types.NamespacedName{Namespace: namespace, Name: "shared-model"}
+				owner := newTestModel(ownerKey.Name, ownerKey.Namespace,
+					newRef("provider", "gpt", "openai-chat", "/v1/chat/completions"))
+				owner.Spec.ModelName = otherKey.Name
+				other := newTestModel(otherKey.Name, otherKey.Namespace,
+					newRef("provider", "gpt", "openai-chat", "/v1/chat/completions"))
+				other.Spec.ModelName = owner.Spec.ModelName
+				reader := &mockModelReader{objects: map[types.NamespacedName]*inferencev1alpha1.ExternalModel{
+					ownerKey: owner,
+					otherKey: other,
+				}}
+				store := newInfoStore()
+				store.addOrUpdateProvider(types.NamespacedName{Namespace: ownerKey.Namespace, Name: "provider"},
+					&providerInfo{provider: "openai", endpoint: "owner.example.com"})
+				r := &externalModelReconciler{Reader: reader, store: store}
+				_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: ownerKey})
+				require.NoError(t, err)
+				before, found := store.getModelByName(owner.Spec.ModelName)
+				require.True(t, found)
+
+				switch cleanup {
+				case "foreign-reference":
+					other.Spec.ExternalProviderRefs[0].Ref.Namespace = "foreign-providers"
+				case "deleted":
+					delete(reader.objects, otherKey)
+				case "deleting":
+					other.DeletionTimestamp = ptr.To(metav1.Now())
+				}
+				result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: otherKey})
+				require.NoError(t, err)
+				if cleanup == "foreign-reference" {
+					assert.Equal(t, providerRequeueDelay, result.RequeueAfter)
+				} else {
+					assert.Equal(t, ctrl.Result{}, result)
+				}
+				after, found := store.getModelByName(owner.Spec.ModelName)
+				require.True(t, found, "cleanup must preserve another ExternalModel's mapping")
+				assert.Same(t, before, after)
+			})
+		}
 	}
 }
 
